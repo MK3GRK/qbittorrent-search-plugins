@@ -1,4 +1,4 @@
-# VERSION: 1.3
+# VERSION: 1.4
 # AUTHORS: BurningMop (burning.mop@yandex.com)
 
 # LICENSING INFORMATION
@@ -30,8 +30,9 @@ from novaprinter import prettyPrinter
 class xxxclubto(object):
     url = 'https://xxxclub.to'
     headers = {
-        'Referer': url
-    }    
+        'Referer': url,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     name = 'XXXClub'
     supported_categories = {
         'all': 'All',
@@ -49,12 +50,12 @@ class xxxclubto(object):
     last_page = 100
 
     class MyHtmlParser(HTMLParser):
-    
+
         def error(self, message):
             pass
-    
+
         UL, LI, SPAN, A = ('ul', 'li', 'span', 'a')
-    
+
         def __init__(self, url, headers):
             HTMLParser.__init__(self)
             self.url = url
@@ -69,8 +70,8 @@ class xxxclubto(object):
             self.insideNameLink = False
             self.foundTableHeading = False
             self.foundRowCatlabe = False
-            self.magnet_regex = r'href="magnet:.*"'
-    
+            self.magnet_regex = r'href="(magnet:[\?\S]+)"'
+
         def handle_starttag(self, tag, attrs):
             params = dict(attrs)
             if 'browsetableinside' in params.get('class', ''):
@@ -83,38 +84,44 @@ class xxxclubto(object):
                 self.insideRow = True
                 return
             if self.insideRow and self.foundTableHeading and tag == self.SPAN:
-                classList = params.get('class', None)
-                if self.foundRowCatlabe:
-                    self.insideCell = True
-                    self.column += 1
-                if 'catlabe' == classList:
-                    self.foundRowCatlabe = True 
+                classList = params.get('class', '')
+                if 'catlabe' in classList:
+                    self.foundRowCatlabe = True
+                self.insideCell = True
+                self.column += 1
                 return
             if self.insideRow and self.foundTableHeading and self.column == 1 and tag == self.A:
                 self.insideNameLink = True
-                href = params.get('href')
+                href = params.get('href', '')
                 link = f'{self.url}{href}'
                 self.row['desc_link'] = link
-                self.row['link'] = link
-                torrent_page = retrieve_url(link, self.headers)
-                matches = re.finditer(self.magnet_regex, torrent_page, re.MULTILINE)
-                magnet_urls = [x.group() for x in matches]
-                self.row['link'] = magnet_urls[0].split('"')[1]
+                
+                try:
+                    torrent_page = retrieve_url(link, self.headers)
+                    matches = re.findall(self.magnet_regex, torrent_page)
+                    if matches:
+                        self.row['link'] = matches[0]
+                    else:
+                        self.row['link'] = link
+                except Exception:
+                    self.row['link'] = link
                 return
-    
+
         def handle_data(self, data):
             if self.insideCell and self.foundRowCatlabe:
+                data = data.strip()
+                if not data:
+                    return
                 if self.column == 1 and self.insideNameLink:
                     self.row['name'] = data
-                if self.column == 3:
-                    size = data.replace(',', '')
-                    self.row['size'] = size
-                if self.column == 4:
+                elif self.column == 3:
+                    self.row['size'] = data.replace(',', '')
+                elif self.column == 4:
                     self.row['seeds'] = data
-                if self.column == 5:
+                elif self.column == 5:
                     self.row['leech'] = data
-            return
-    
+                return
+
         def handle_endtag(self, tag):
             if self.insideCell and self.insideNameLink and tag == self.A:
                 self.insideNameLink = False
@@ -124,71 +131,34 @@ class xxxclubto(object):
                 if not self.foundTableHeading:
                     self.foundTableHeading = True
                 else:
-                    self.row['engine_url'] = self.url
-                    prettyPrinter(self.row)
-                    self.insideRow = False
-                    self.foundRowCatlabe = False
-                    self.column = 0
-                    self.row = {}
+                    if self.row.get('name'):
+                        self.row['engine_url'] = self.url
+                        prettyPrinter(self.row)
+                self.insideRow = False
+                self.foundRowCatlabe = False
+                self.column = 0
+                self.row = {}
                 return
 
-    def download_torrent(self, info):
-        print(download_file(info))
+        def download_torrent(self, info):
+            print(download_file(info))
 
-    def get_page_url(self, what, category, page):
-        return f'{self.url}/torrents/search/{category}/{what}?page={page}&sort=seeders&order=asc'
-    def get_results(self, html):
-        container_matches = re.finditer(self.container_regex, html, re.MULTILINE)
-        container = [x.group() for x in container_matches]
+        def get_page_url(self, what, category, page):
+            return f'{self.url}/torrents/search/{category}/{what}?page={page}&sort=seeders&order=asc'
 
-        if len(container) > 0:
-            container_html = container[0]
-            items_matches = re.finditer(self.items_regex, container_html, re.MULTILINE)
-            items = [x.group() for x in items_matches]
-            self.has_results = len(items) > 1
-        else:
-            self.has_results = False
+        def get_results(self, html):
+            container_matches = re.finditer(self.container_regex, html, re.MULTILINE)
+            container = [x.group() for x in container_matches]
 
-    def get_next_page(self, html):
-        next_page_matches = re.finditer(self.pagination_next_regex, html, re.MULTILINE)
-        next_page = [x.group() for x in next_page_matches]
+            if len(container) > 0:
+                container_html = container[0]
+                items_matches = re.finditer(self.items_regex, container_html, re.MULTILINE)
+                items = [x.group() for x in items_matches]
+                self.has_results = len(items) > 1
+            else:
+                self.has_results = False
 
-        if len(next_page) == 0:
-            self.has_next_page = False
-            self.get_last_page(html)
-
-    def get_last_page(self, html):
-        last_page_matches = re.finditer(self.pagination_last_page, html, re.MULTILINE)
-        last_page = [x.group() for x in last_page_matches]
-
-        if len(last_page) == 0:
-            self.last_page = 1
-        else:
-            self.last_page = int(re.sub(r'</a>', '',re.sub(r'<a.*?>', '', last_page[0])))
-
-    def threaded_search(self, page, what, cat):
-        page_url = self.get_page_url(what, cat, page)
-        self.headers['Referer'] = page_url
-        retrieved_html = retrieve_url(page_url, self.headers)
-        self.get_results(retrieved_html)
-        self.get_next_page(retrieved_html)
-        parser = self.MyHtmlParser(self.url, self.headers)
-        if self.has_results and page <= self.last_page:
-            parser.feed(retrieved_html)
-            parser.close()           
-
-    def search(self, what, cat='all'):
-        category = self.supported_categories[cat]
-        page = 1
-
-        threads = []
-        while self.has_results and self.has_next_page:
-            t = threading.Thread(args=(page, what, category), target=self.threaded_search)
-            t.start()
-            time.sleep(0.5)
-            threads.append(t)
-
-            page += 1
-
-        for t in threads:
-            t.join()
+        def get_next_page(self, html):
+            next_page_matches = re.finditer(self.pagination_next_regex, html, re.MULTILINE)
+            next_page = [x.group() for x in next_page_matches]
+            self.has_next_page = len(next_page) > 0
